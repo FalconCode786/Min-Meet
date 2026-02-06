@@ -26,9 +26,9 @@ class MeetingStore:
         self.end_time = None
         self.meeting_title = f"Meeting - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         self.audio_sources = set()
-        self.source_voice_profiles = {}
         
     def get_or_create_speaker(self, voice_features, audio_source='default'):
+        """Advanced speaker recognition with source isolation"""
         source_key = f"{audio_source}_{voice_features.get('channel', 'mono')}"
         
         best_match = None
@@ -79,6 +79,7 @@ class MeetingStore:
         return speaker_id
     
     def is_question(self, text):
+        """Enhanced question detection"""
         text = text.strip()
         text_lower = text.lower()
         
@@ -106,6 +107,7 @@ class MeetingStore:
         return False
     
     def detect_decision(self, text):
+        """Auto-detect decisions"""
         indicators = ['decided', 'decision', 'agreed', 'conclusion', 'finalized', 
                      'resolved', 'approved', 'confirmed', 'consensus', 'settled on',
                      'moving forward with', 'we will', 'let\'s go with', 'approved']
@@ -113,6 +115,7 @@ class MeetingStore:
         return any(ind in text_lower for ind in indicators)
     
     def detect_action_item(self, text, speaker):
+        """Auto-detect action items"""
         assign_patterns = [
             r'(i will|i\'ll|i am going to|i\'m going to)\s+(.+)',
             r'(let me|i can|i should)\s+(.+)',
@@ -134,6 +137,7 @@ class MeetingStore:
         return False
     
     def add_utterance(self, text, voice_features, audio_source='default'):
+        """Process new speech"""
         speaker_id = self.get_or_create_speaker(voice_features, audio_source)
         speaker_data = self.participants[speaker_id]
         
@@ -195,6 +199,7 @@ class MeetingStore:
         return entry
     
     def get_minutes_structure(self):
+        """Generate structured minutes"""
         minutes = {
             'title': self.meeting_title,
             'date': self.start_time or datetime.now().isoformat(),
@@ -263,10 +268,23 @@ class MeetingStore:
     def calculate_duration(self):
         if not self.end_time or not self.start_time:
             return "In progress"
-        start = datetime.fromisoformat(self.start_time)
-        end = datetime.fromisoformat(self.end_time)
-        duration = end - start
-        return str(duration).split('.')[0]
+        try:
+            start = datetime.fromisoformat(self.start_time)
+            end = datetime.fromisoformat(self.end_time)
+            duration = end - start
+            total_seconds = int(duration.total_seconds())
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            seconds = total_seconds % 60
+            
+            if hours > 0:
+                return f"{hours}h {minutes}m {seconds}s"
+            elif minutes > 0:
+                return f"{minutes}m {seconds}s"
+            else:
+                return f"{seconds}s"
+        except:
+            return "Unknown"
 
 @app.route('/')
 def index():
@@ -274,20 +292,23 @@ def index():
 
 @app.route('/api/meeting/start', methods=['POST'])
 def start_meeting():
-    data = request.get_json() or {}
-    meeting_type = data.get('meeting_type', 'physical')
-    
-    meeting_id = str(uuid.uuid4())
-    meetings[meeting_id] = MeetingStore(meeting_type=meeting_type)
-    meetings[meeting_id].start_time = datetime.now().isoformat()
-    
-    return jsonify({
-        'meeting_id': meeting_id,
-        'meeting_type': meeting_type,
-        'status': 'started',
-        'timestamp': meetings[meeting_id].start_time,
-        'message': get_setup_message(meeting_type)
-    })
+    try:
+        data = request.get_json() or {}
+        meeting_type = data.get('meeting_type', 'physical')
+        
+        meeting_id = str(uuid.uuid4())
+        meetings[meeting_id] = MeetingStore(meeting_type=meeting_type)
+        meetings[meeting_id].start_time = datetime.now().isoformat()
+        
+        return jsonify({
+            'meeting_id': meeting_id,
+            'meeting_type': meeting_type,
+            'status': 'started',
+            'timestamp': meetings[meeting_id].start_time,
+            'message': get_setup_message(meeting_type)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 def get_setup_message(meeting_type):
     messages = {
@@ -299,218 +320,257 @@ def get_setup_message(meeting_type):
 
 @app.route('/api/meeting/<meeting_id>/audio', methods=['POST'])
 def receive_audio(meeting_id):
-    if meeting_id not in meetings:
-        return jsonify({'error': 'Meeting not found'}), 404
+    try:
+        if meeting_id not in meetings:
+            return jsonify({'error': 'Meeting not found'}), 404
+            
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+            
+        text = data.get('text', '').strip()
+        voice_features = data.get('voice_features', {
+            'avg_pitch': 100,
+            'words_per_minute': 120,
+            'energy': 5000
+        })
+        audio_source = data.get('audio_source', 'microphone')
+        channel = data.get('channel', 'mono')
         
-    data = request.get_json()
-    text = data.get('text', '').strip()
-    voice_features = data.get('voice_features', {
-        'avg_pitch': 100,
-        'words_per_minute': 120,
-        'energy': 5000
-    })
-    audio_source = data.get('audio_source', 'microphone')
-    channel = data.get('channel', 'mono')
-    
-    if not text:
-        return jsonify({'error': 'No text provided'}), 400
+        if not text:
+            return jsonify({'error': 'No text provided'}), 400
+            
+        meeting = meetings[meeting_id]
+        voice_features['channel'] = channel
         
-    meeting = meetings[meeting_id]
-    voice_features['channel'] = channel
-    
-    entry = meeting.add_utterance(text, voice_features, audio_source)
-    
-    return jsonify({
-        'entry': entry,
-        'speaker_count': len(meeting.participants),
-        'audio_sources': list(meeting.audio_sources)
-    })
+        entry = meeting.add_utterance(text, voice_features, audio_source)
+        
+        return jsonify({
+            'entry': entry,
+            'speaker_count': len(meeting.participants),
+            'audio_sources': list(meeting.audio_sources)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/meeting/<meeting_id>/status', methods=['GET'])
 def get_status(meeting_id):
-    if meeting_id not in meetings:
-        return jsonify({'error': 'Meeting not found'}), 404
+    try:
+        if meeting_id not in meetings:
+            return jsonify({'error': 'Meeting not found'}), 404
+            
+        meeting = meetings[meeting_id]
+        recent = request.args.get('since', 0, type=int)
         
-    meeting = meetings[meeting_id]
-    recent = request.args.get('since', 0, type=int)
-    
-    new_entries = meeting.transcript[recent:]
-    
-    return jsonify({
-        'entries': new_entries,
-        'total_count': len(meeting.transcript),
-        'participants': {
-            k: {
-                'name': v['name'], 
-                'is_remote': v['is_remote'],
-                'source': v['audio_source']
-            } 
-            for k, v in meeting.participants.items()
-        },
-        'audio_sources': list(meeting.audio_sources),
-        'is_active': meeting.end_time is None,
-        'meeting_type': meeting.meeting_type,
-        'unanswered_questions': len(meeting.unanswered_questions)
-    })
+        new_entries = meeting.transcript[recent:]
+        
+        return jsonify({
+            'entries': new_entries,
+            'total_count': len(meeting.transcript),
+            'participants': {
+                k: {
+                    'name': v['name'], 
+                    'is_remote': v['is_remote'],
+                    'source': v['audio_source']
+                } 
+                for k, v in meeting.participants.items()
+            },
+            'audio_sources': list(meeting.audio_sources),
+            'is_active': meeting.end_time is None,
+            'meeting_type': meeting.meeting_type,
+            'unanswered_questions': len(meeting.unanswered_questions)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/meeting/<meeting_id>/stop', methods=['POST'])
 def stop_meeting(meeting_id):
-    if meeting_id not in meetings:
-        return jsonify({'error': 'Meeting not found'}), 404
-        
-    meetings[meeting_id].end_time = datetime.now().isoformat()
-    return jsonify({
-        'status': 'stopped',
-        'duration': meetings[meeting_id].calculate_duration()
-    })
+    try:
+        if meeting_id not in meetings:
+            return jsonify({'error': 'Meeting not found'}), 404
+            
+        meetings[meeting_id].end_time = datetime.now().isoformat()
+        return jsonify({
+            'status': 'stopped',
+            'duration': meetings[meeting_id].calculate_duration()
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/meeting/<meeting_id>/pdf', methods=['GET'])
 def generate_pdf(meeting_id):
-    if meeting_id not in meetings:
-        return jsonify({'error': 'Meeting not found'}), 404
+    try:
+        if meeting_id not in meetings:
+            return jsonify({'error': 'Meeting not found'}), 404
+            
+        meeting = meetings[meeting_id]
+        minutes = meeting.get_minutes_structure()
         
-    meeting = meetings[meeting_id]
-    minutes = meeting.get_minutes_structure()
-    
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    
-    # Professional Header
-    pdf.set_font('Arial', 'B', 20)
-    pdf.set_text_color(40, 40, 40)
-    pdf.cell(0, 12, 'MEETING MINUTES', ln=True, align='C')
-    
-    pdf.set_font('Arial', '', 10)
-    pdf.set_text_color(100, 100, 100)
-    date_str = datetime.now().strftime('%B %d, %Y at %H:%M')
-    pdf.cell(0, 6, f"{date_str} | {minutes['meeting_type'].upper()} MEETING", ln=True, align='C')
-    pdf.line(10, 35, 200, 35)
-    pdf.ln(8)
-    
-    # Meeting Info
-    pdf.set_font('Arial', 'B', 12)
-    pdf.set_text_color(40, 40, 40)
-    pdf.cell(0, 8, 'Meeting Information', ln=True)
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(0, 6, f"Duration: {minutes['duration']}", ln=True)
-    pdf.cell(0, 6, f"Audio Sources: {', '.join(minutes['audio_sources'])}", ln=True)
-    pdf.ln(4)
-    
-    # Participants Section
-    pdf.set_font('Arial', 'B', 12)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.cell(0, 10, ' PARTICIPANTS', ln=True, fill=True)
-    
-    if minutes['participants']:
-        pdf.set_font('Arial', 'B', 10)
-        pdf.cell(0, 6, 'In-Person:', ln=True)
+        # Create PDF with error handling
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        
+        # Helper function to safely encode text
+        def safe_text(text):
+            if text is None:
+                return ""
+            # Encode to latin-1, replacing unsupported characters
+            return text.encode('latin-1', 'replace').decode('latin-1')
+        
+        # Header
+        pdf.set_font('Arial', 'B', 20)
+        pdf.set_text_color(40, 40, 40)
+        pdf.cell(0, 12, safe_text('MEETING MINUTES'), ln=True, align='C')
+        
         pdf.set_font('Arial', '', 10)
-        for p in minutes['participants']:
-            pdf.cell(0, 5, f"  • {p['name']} ({p['speaking_time']} contributions)", ln=True)
-    
-    if minutes['remote_participants']:
-        pdf.ln(2)
-        pdf.set_font('Arial', 'B', 10)
-        pdf.cell(0, 6, 'Remote:', ln=True)
-        pdf.set_font('Arial', '', 10)
-        for p in minutes['remote_participants']:
-            source = p['source'].replace('_', ' ').title()
-            pdf.cell(0, 5, f"  • {p['name']} via {source}", ln=True)
-    
-    pdf.ln(6)
-    
-    # Q&A Section
-    if minutes['qa_pairs']:
+        pdf.set_text_color(100, 100, 100)
+        date_str = datetime.now().strftime('%B %d, %Y at %H:%M')
+        pdf.cell(0, 6, safe_text(f"{date_str} | {minutes['meeting_type'].upper()} MEETING"), ln=True, align='C')
+        pdf.line(10, 35, 200, 35)
+        pdf.ln(8)
+        
+        # Meeting Info
         pdf.set_font('Arial', 'B', 12)
-        pdf.set_fill_color(230, 240, 255)
-        pdf.cell(0, 10, ' QUESTIONS & ANSWERS', ln=True, fill=True)
-        pdf.ln(2)
+        pdf.set_text_color(40, 40, 40)
+        pdf.cell(0, 8, safe_text('Meeting Information'), ln=True)
+        pdf.set_font('Arial', '', 10)
+        pdf.cell(0, 6, safe_text(f"Duration: {minutes['duration']}"), ln=True)
+        pdf.cell(0, 6, safe_text(f"Audio Sources: {', '.join(minutes['audio_sources'])}"), ln=True)
+        pdf.ln(4)
         
-        for i, qa in enumerate(minutes['qa_pairs'], 1):
+        # Participants Section
+        pdf.set_font('Arial', 'B', 12)
+        pdf.set_fill_color(240, 240, 240)
+        pdf.cell(0, 10, safe_text(' PARTICIPANTS'), ln=True, fill=True)
+        
+        if minutes['participants']:
             pdf.set_font('Arial', 'B', 10)
-            pdf.set_text_color(0, 51, 102)
-            q_time = qa['question']['timestamp'][11:16]
-            q_text = qa['question']['text']
-            pdf.multi_cell(0, 6, f"Q{i}. [{q_time}] {qa['question']['speaker_name']}: {q_text}")
-            
-            pdf.set_text_color(0, 102, 51)
+            pdf.cell(0, 6, safe_text('In-Person:'), ln=True)
             pdf.set_font('Arial', '', 10)
-            for ans in qa['answers']:
-                a_time = ans['timestamp'][11:16]
-                pdf.multi_cell(0, 5, f"   A. [{a_time}] {ans['speaker_name']}: {ans['text']}")
+            for p in minutes['participants']:
+                line = f"  - {p['name']} ({p['speaking_time']} contributions)"
+                pdf.cell(0, 5, safe_text(line), ln=True)
+        
+        if minutes['remote_participants']:
+            pdf.ln(2)
+            pdf.set_font('Arial', 'B', 10)
+            pdf.cell(0, 6, safe_text('Remote:'), ln=True)
+            pdf.set_font('Arial', '', 10)
+            for p in minutes['remote_participants']:
+                source = p['source'].replace('_', ' ').title()
+                line = f"  - {p['name']} via {source}"
+                pdf.cell(0, 5, safe_text(line), ln=True)
+        
+        pdf.ln(6)
+        
+        # Q&A Section
+        if minutes['qa_pairs']:
+            pdf.set_font('Arial', 'B', 12)
+            pdf.set_fill_color(230, 240, 255)
+            pdf.cell(0, 10, safe_text(' QUESTIONS & ANSWERS'), ln=True, fill=True)
+            pdf.ln(2)
             
-            if qa['follow_up_questions']:
-                pdf.set_text_color(102, 51, 0)
-                pdf.set_font('Arial', 'I', 9)
-                for fq in qa['follow_up_questions']:
-                    pdf.multi_cell(0, 5, f"   Follow-up: {fq['text'][:60]}...")
+            for i, qa in enumerate(minutes['qa_pairs'], 1):
+                # Question
+                pdf.set_font('Arial', 'B', 10)
+                pdf.set_text_color(0, 51, 102)
+                q_time = qa['question']['timestamp'][11:16] if len(qa['question']['timestamp']) > 16 else qa['question']['timestamp']
+                q_text = qa['question']['text']
+                q_speaker = qa['question']['speaker_name']
+                
+                pdf.multi_cell(0, 6, safe_text(f"Q{i}. [{q_time}] {q_speaker}:"))
+                pdf.set_font('Arial', '', 10)
+                pdf.multi_cell(0, 5, safe_text(f"    {q_text}"))
+                
+                # Answers
+                pdf.set_text_color(0, 102, 51)
+                for ans in qa['answers']:
+                    a_time = ans['timestamp'][11:16] if len(ans['timestamp']) > 16 else ans['timestamp']
+                    a_speaker = ans['speaker_name']
+                    a_text = ans['text']
+                    pdf.set_font('Arial', 'B', 9)
+                    pdf.cell(0, 5, safe_text(f"    A. [{a_time}] {a_speaker}:"), ln=True)
+                    pdf.set_font('Arial', '', 9)
+                    pdf.multi_cell(0, 4, safe_text(f"       {a_text}"))
+                
+                pdf.set_text_color(0, 0, 0)
+                pdf.ln(3)
+        
+        # Key Decisions
+        if minutes['decisions']:
+            pdf.ln(4)
+            pdf.set_font('Arial', 'B', 12)
+            pdf.set_fill_color(255, 240, 230)
+            pdf.cell(0, 10, safe_text(' KEY DECISIONS'), ln=True, fill=True)
+            pdf.set_font('Arial', 'B', 10)
+            pdf.set_text_color(180, 80, 40)
             
-            pdf.ln(3)
+            for d in minutes['decisions']:
+                time_str = d['timestamp'][11:16] if len(d['timestamp']) > 16 else d['timestamp']
+                pdf.multi_cell(0, 6, safe_text(f"• [{time_str}] {d['text']}"))
             pdf.set_text_color(0, 0, 0)
-    
-    # Key Decisions
-    if minutes['decisions']:
-        pdf.ln(4)
-        pdf.set_font('Arial', 'B', 12)
-        pdf.set_fill_color(255, 240, 230)
-        pdf.cell(0, 10, ' KEY DECISIONS', ln=True, fill=True)
-        pdf.set_font('Arial', 'B', 10)
-        pdf.set_text_color(180, 80, 40)
         
-        for d in minutes['decisions']:
-            time_str = d['timestamp'][11:16]
-            pdf.multi_cell(0, 6, f"• [{time_str}] {d['text']}")
-        pdf.set_text_color(0, 0, 0)
-    
-    # Action Items
-    if minutes['action_items']:
-        pdf.ln(4)
-        pdf.set_font('Arial', 'B', 12)
-        pdf.set_fill_color(255, 255, 230)
-        pdf.cell(0, 10, ' ACTION ITEMS', ln=True, fill=True)
-        pdf.set_font('Arial', 'B', 10)
-        pdf.set_text_color(180, 140, 40)
+        # Action Items
+        if minutes['action_items']:
+            pdf.ln(4)
+            pdf.set_font('Arial', 'B', 12)
+            pdf.set_fill_color(255, 255, 230)
+            pdf.cell(0, 10, safe_text(' ACTION ITEMS'), ln=True, fill=True)
+            pdf.set_font('Arial', 'B', 10)
+            pdf.set_text_color(180, 140, 40)
+            
+            for item in minutes['action_items']:
+                time_str = item['timestamp'][11:16] if len(item['timestamp']) > 16 else item['timestamp']
+                assignee = item.get('assignee', 'Unassigned')
+                pdf.multi_cell(0, 6, safe_text(f"• [{time_str}] {assignee}: {item['text']}"))
+            pdf.set_text_color(0, 0, 0)
         
-        for item in minutes['action_items']:
-            time_str = item['timestamp'][11:16]
-            assignee = item.get('assignee', 'Unassigned')
-            pdf.multi_cell(0, 6, f"• [{time_str}] {assignee}: {item['text']}")
-        pdf.set_text_color(0, 0, 0)
-    
-    # Additional Discussion
-    other_entries = [e for e in meeting.transcript 
-                     if e['type'] == 'statement' and len(e['text']) > 30 
-                     and not e.get('is_decision') and not e.get('is_action_item')]
-    
-    if other_entries:
-        pdf.ln(4)
-        pdf.set_font('Arial', 'B', 12)
-        pdf.set_fill_color(245, 245, 245)
-        pdf.cell(0, 10, ' ADDITIONAL DISCUSSION', ln=True, fill=True)
-        pdf.set_font('Arial', '', 9)
+        # Additional Discussion
+        other_entries = [e for e in meeting.transcript 
+                         if e['type'] == 'statement' and len(e['text']) > 30 
+                         and not e.get('is_decision') and not e.get('is_action_item')]
         
-        for entry in other_entries[:20]:
-            time_str = entry['timestamp'][11:16]
-            text = entry['text'][:100] + '...' if len(entry['text']) > 100 else entry['text']
-            pdf.cell(0, 5, f"[{time_str}] {entry['speaker_name']}: {text}", ln=True)
-    
-    # Footer
-    pdf.set_y(-15)
-    pdf.set_font('Arial', 'I', 8)
-    pdf.set_text_color(128, 128, 128)
-    pdf.cell(0, 10, f'Generated by Automated Meeting Minutes System | Page {pdf.page_no()}', 0, 0, 'C')
-    
-    output = io.BytesIO()
-    pdf.output(output)
-    output.seek(0)
-    
-    return send_file(
-        output,
-        mimetype='application/pdf',
-        as_attachment=True,
-        download_name=f'meeting_minutes_{meeting_type}_{meeting_id[:8]}.pdf'
-    )
+        if other_entries:
+            pdf.ln(4)
+            pdf.set_font('Arial', 'B', 12)
+            pdf.set_fill_color(245, 245, 245)
+            pdf.cell(0, 10, safe_text(' ADDITIONAL DISCUSSION'), ln=True, fill=True)
+            pdf.set_font('Arial', '', 9)
+            
+            for entry in other_entries[:15]:  # Limit to prevent huge PDFs
+                time_str = entry['timestamp'][11:16] if len(entry['timestamp']) > 16 else entry['timestamp']
+                text = entry['text'][:80] + '...' if len(entry['text']) > 80 else entry['text']
+                line = f"[{time_str}] {entry['speaker_name']}: {text}"
+                pdf.cell(0, 5, safe_text(line), ln=True)
+        
+        # Footer
+        pdf.set_y(-15)
+        pdf.set_font('Arial', 'I', 8)
+        pdf.set_text_color(128, 128, 128)
+        pdf.cell(0, 10, safe_text(f'Generated by VoiceMinutes AI | Page {pdf.page_no()}'), 0, 0, 'C')
+        
+        # Output to bytes
+        output = io.BytesIO()
+        pdf.output(output)
+        output.seek(0)
+        
+        # Generate safe filename
+        safe_meeting_type = meeting.meeting_type.replace('/', '-')
+        filename = f'meeting_minutes_{safe_meeting_type}_{meeting_id[:8]}.pdf'
+        
+        return send_file(
+            output,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=filename
+        )
+        
+    except Exception as e:
+        import traceback
+        print(f"PDF Generation Error: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': f'PDF generation failed: {str(e)}'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
